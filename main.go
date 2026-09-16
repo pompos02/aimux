@@ -22,6 +22,8 @@ func main() {
 		runAcknowledge(args[1:])
 	case "set":
 		runSet(args[1:])
+	case "pick":
+		runPick(args[1:])
 	default:
 		usage()
 	}
@@ -80,6 +82,16 @@ func runSet(args []string) {
 		usage()
 	}
 	setAgent(args[0], status)
+}
+
+func runPick(args []string) {
+	if len(args) != 0 {
+		usage()
+	}
+	if err := pick(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 }
 
 func usage() {
