@@ -26,10 +26,10 @@ bind a display-popup -x C -y C -w 70% -h 70% -E "~/.local/bin/aimux pick"
 set-hook -g pane-focus-in 'run-shell -b "~/.local/bin/aimux acknowledge #{pane_id}"'
 ```
 
-Optional status-bar counts:
+Optional `[working blocked idle done]` status-bar counts (colors are included):
 
 ```txt
-set -g status-right '#(~/.local/bin/aimux count) .... rest of you confiruation
+set -g status-right '#(~/.local/bin/aimux count) ...rest of your configuration...'
 ```
 
 Reload tmux with `tmux source-file ~/.tmux.conf`.

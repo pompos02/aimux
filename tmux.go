@@ -170,7 +170,7 @@ func countSummary(agents []Agent) string {
 			done++
 		}
 	}
-	return fmt.Sprintf("[%d,%d,%d,%d]", working, waiting, idle, done)
+	return fmt.Sprintf("[#[fg=green]%d#[default] #[fg=red]%d#[default] #[dim]%d#[default] #[fg=cyan]%d#[default]]", working, waiting, idle, done)
 }
 
 type GitInfo struct {

@@ -467,7 +467,7 @@ func statusLabel(status string) string {
 	case "working":
 		return green + workingFrames[time.Now().UnixMilli()/500%int64(len(workingFrames))] + " working" + reset
 	case "waiting":
-		return yellow + "! blocked" + reset
+		return red + "! blocked" + reset
 	case "done":
 		return cyan + "● done   " + reset
 	default:
