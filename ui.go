@@ -14,6 +14,7 @@ import (
 const (
 	reset  = "\x1b[0m"
 	green  = "\x1b[32m"
+	red    = "\x1b[31m"
 	yellow = "\x1b[33m"
 	cyan   = "\x1b[36m"
 	dim    = "\x1b[2m"
@@ -422,5 +423,5 @@ func projectName(path string) string {
 
 func gitInfoDisplay(path string) string {
 	info := gitInfo(path)
-	return info.branch + " +" + strconv.Itoa(info.added) + "/-" + strconv.Itoa(info.removed)
+	return yellow + info.branch + green + " +" + strconv.Itoa(info.added) + red + " -" + strconv.Itoa(info.removed) + reset
 }
