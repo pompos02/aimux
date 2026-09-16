@@ -1,7 +1,6 @@
 package main
 
 import (
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -18,7 +17,10 @@ const (
 	yellow = "\x1b[33m"
 	cyan   = "\x1b[36m"
 	dim    = "\x1b[2m"
+	bold   = "\x1b[1m"
 )
+
+var selected = ansi.Style{}.BackgroundColor(ansi.RGBColor{R: 38, G: 61, B: 57}).String()
 
 type picker struct {
 	// agents is the latest successful inventory. Poll failures leave it intact.
@@ -263,7 +265,7 @@ func (p picker) visibleAgents() []Agent {
 		if status == "waiting" {
 			status += " blocked"
 		}
-		targets[i] = status + " " + projectName(agent.Path) + " " + p.git[agent.Path] + " " + agent.Target
+		targets[i] = status + " " + agent.Session + " " + p.git[agent.Path] + " " + agent.Title
 	}
 	// fuzzy.Find both filters and ranks, giving fzf-like ordering without
 	// coupling the picker to a full list widget.
@@ -315,47 +317,56 @@ func (p *picker) scrollPreview(delta int) {
 	}
 }
 
-func (p picker) bodyHeight() int { return max(1, p.height-3) }
+func (p picker) panelHeights() (list, preview int) {
+	available := max(2, p.height-4)
+	list = max(1, available*30/100)
+	return list, max(1, available-list)
+}
+
+func (p picker) bodyHeight() int {
+	_, preview := p.panelHeights()
+	return preview
+}
 
 func (p picker) View() tea.View {
-	bodyHeight := p.bodyHeight()
+	listHeight, previewHeight := p.panelHeights()
 	visible := p.visibleAgents()
-	// Below 80 cells the preview costs more readability than it provides.
-	wide := p.width >= 80
-	leftWidth := p.width
-	if wide {
-		leftWidth = max(30, p.width*35/100)
-	}
-	rightWidth := max(1, p.width-leftWidth-3)
-	rows := make([]string, bodyHeight)
-	start := max(0, p.cursor-bodyHeight+1)
-	for row := range bodyHeight {
+	remaining := max(0, p.width-25)
+	sessionWidth := max(6, remaining/4)
+	gitWidth := max(10, remaining*2/5)
+	columns := fit(bold+"#"+reset, 4) + fit(bold+"STATUS"+reset, 11) + fit(bold+"SESSION"+reset, sessionWidth) + fit(bold+"BRANCH"+reset, gitWidth) + fit(bold+"TIME"+reset, 10) + bold + "TITLE" + reset
+	rows := make([]string, listHeight)
+	start := max(0, p.cursor-listHeight+1)
+	for row := range listHeight {
 		i := start + row
-		left := ""
+		entry := ""
+		isSelected := false
 		if i < len(visible) {
 			agent := visible[i]
-			cursor := "  "
+			number := "  " + strconv.Itoa(i+1)
 			if i == p.cursor {
-				cursor = "> "
+				number = "> " + strconv.Itoa(i+1)
+				isSelected = true
 			}
-			left = cursor + statusLabel(agent.Status) + "  " + projectName(agent.Path) + "  " + p.git[agent.Path] + "  " + agent.Target
+			title := agent.Title
+			if title == "" {
+				title = "-"
+			}
+			entry = fit(number, 4) + fit(statusLabel(agent.Status), 11) + fit(agent.Session, sessionWidth) + fit(p.git[agent.Path], gitWidth) + fit(dim+activeFor(agent.Started)+reset, 10) + title
 		} else if len(visible) == 0 && row == 0 {
-			left = "No registered agents"
+			entry = "No registered agents"
 		}
-		if wide {
-			preview := p.previewLine(row, bodyHeight)
-			rows[row] = fit(left, leftWidth) + " │ " + fit(preview, rightWidth)
-		} else {
-			rows[row] = fit(left, leftWidth)
+		rows[row] = fit(entry, p.width)
+		if isSelected {
+			rows[row] = selected + strings.ReplaceAll(rows[row], reset, reset+selected) + reset
 		}
 	}
 
-	header := fit("Agents", leftWidth)
-	separator := strings.Repeat("─", max(0, leftWidth))
-	if wide {
-		header += " │ " + fit("Preview", rightWidth)
-		separator += "─┼─" + strings.Repeat("─", rightWidth)
+	preview := make([]string, previewHeight)
+	for row := range previewHeight {
+		preview[row] = fit(p.previewLine(row, previewHeight), p.width)
 	}
+	separator := strings.Repeat("─", max(0, p.width))
 	footer := "j/k move  / filter  Enter switch  q quit  Ctrl-U/D preview"
 	if p.filtering {
 		footer = "/" + p.filter + "_"
@@ -365,7 +376,8 @@ func (p picker) View() tea.View {
 	if p.err != nil {
 		footer = p.err.Error()
 	}
-	content := header + "\n" + separator + "\n" + strings.Join(rows, "\n") + "\n" + fit(footer, p.width)
+	content := fit(columns, p.width) + "\n" + strings.Join(rows, "\n") + "\n" +
+		fit(bold+"# Preview"+reset, p.width) + "\n" + separator + "\n" + strings.Join(preview, "\n") + "\n" + fit(footer, p.width)
 	view := tea.NewView(content)
 	view.AltScreen = true
 	return view
@@ -414,14 +426,14 @@ func statusLabel(status string) string {
 	}
 }
 
-func projectName(path string) string {
-	if path == "" {
+func activeFor(started int64) string {
+	if started <= 0 {
 		return "-"
 	}
-	return filepath.Base(path)
+	return max(time.Duration(0), time.Since(time.UnixMilli(started))).Truncate(time.Second).String()
 }
 
 func gitInfoDisplay(path string) string {
 	info := gitInfo(path)
-	return yellow + info.branch + green + " +" + strconv.Itoa(info.added) + red + " -" + strconv.Itoa(info.removed) + reset
+	return yellow + info.branch + reset + "(" + green + "+" + strconv.Itoa(info.added) + reset + "/" + red + "-" + strconv.Itoa(info.removed) + reset + ")"
 }

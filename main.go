@@ -43,7 +43,7 @@ func runList(args []string) {
 		usage()
 	}
 	for _, agent := range agents() {
-		fmt.Printf("%s\t%s\t%s\t%s\t%s\n", agent.Pane, agent.Agent, agent.Status, agent.Target, agent.Path)
+		fmt.Printf("%s\t%s\t%s\t%s\n", agent.Pane, agent.Status, agent.Target, agent.Path)
 	}
 }
 

@@ -11,14 +11,16 @@ import (
 	"time"
 )
 
-// Agent is the pane-local state reported an agent hook.
-// Pane is the stable identity; Target and Path are display metadata.
+// Agent is the pane-local state reported by an agent hook.
+// Pane is the stable identity; the remaining fields are display metadata.
 type Agent struct {
-	Pane   string
-	Agent  string
-	Status string
-	Target string
-	Path   string
+	Pane    string
+	Status  string
+	Session string
+	Title   string
+	Started int64
+	Target  string
+	Path    string
 }
 
 // cappedBuffer accepts all writes while retaining only a bounded prefix. This
@@ -53,14 +55,15 @@ func tmux(args ...string) ([]byte, error) {
 	return output(ctx, "tmux", args...)
 }
 
-func setAgent(agent, status string) {
+func setAgent(_ string, status string) {
 	pane := os.Getenv("TMUX_PANE")
 	if pane == "" {
 		return
 	}
 	// Hook callers intentionally ignore tmux failures. Agent tools must keep
 	// running even if their pane disappears during shutdown.
-	tmux("set-option", "-p", "-t", pane, "@aimux_agent", agent)
+	tmux("set-option", "-p", "-t", pane, "@aimux_agent", "1")
+	tmux("set-option", "-po", "-t", pane, "@aimux_started", strconv.FormatInt(time.Now().UnixMilli(), 10))
 	if status == "" {
 		tmux("set-option", "-pu", "-t", pane, "@aimux_status")
 	} else {
@@ -82,6 +85,7 @@ func clearAgent() {
 	}
 	tmux("set-option", "-pu", "-t", pane, "@aimux_agent")
 	tmux("set-option", "-pu", "-t", pane, "@aimux_status")
+	tmux("set-option", "-pu", "-t", pane, "@aimux_started")
 }
 
 func acknowledge(pane string) {
@@ -107,7 +111,9 @@ func agents() []Agent {
 func loadAgents() ([]Agent, error) {
 	// One list-panes call keeps count and dashboard refreshes cheap across all
 	// sessions. A missing agent option marks a pane as unregistered.
-	const format = "#{pane_id}\t#{?@aimux_agent,#{@aimux_agent},-}\t#{?@aimux_status,#{@aimux_status},idle}\t#{session_name}:#{window_index}.#{pane_index}\t#{pane_current_path}"
+	// ponytail: pane_title is supplied by the harness; add hook metadata only if
+	// a harness stops setting useful terminal titles.
+	const format = "#{pane_id}\t#{?@aimux_agent,1,-}\t#{?@aimux_status,#{@aimux_status},idle}\t#{session_name}\t#{pane_title}\t#{@aimux_started}\t#{session_name}:#{window_index}.#{pane_index}\t#{pane_current_path}"
 	out, err := tmux("list-panes", "-a", "-F", format)
 	if err != nil {
 		return nil, err
@@ -123,15 +129,16 @@ func parseAgents(out string) []Agent {
 	var result []Agent
 	for line := range strings.SplitSeq(out, "\n") {
 		// SplitN preserves tabs in the final path field.
-		fields := strings.SplitN(line, "\t", 5)
-		if len(fields) != 5 || fields[1] == "-" {
+		fields := strings.SplitN(line, "\t", 8)
+		if len(fields) != 8 || fields[1] == "-" {
 			continue
 		}
 		if fields[2] == "" {
 			fields[2] = "idle"
 		}
+		started, _ := strconv.ParseInt(fields[5], 10, 64)
 		result = append(result, Agent{
-			Pane: fields[0], Agent: fields[1], Status: fields[2], Target: fields[3], Path: fields[4],
+			Pane: fields[0], Status: fields[2], Session: fields[3], Title: fields[4], Started: started, Target: fields[6], Path: fields[7],
 		})
 	}
 	return result
