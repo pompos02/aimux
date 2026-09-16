@@ -13,7 +13,7 @@ type Agent struct {
 	Pane, Agent, Status, Target, Path string
 }
 
-// Run a tmux comamnd with a timeout
+// Run a tmux command with a timeout
 func tmux(args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
