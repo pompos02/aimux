@@ -1,3 +1,5 @@
+// Command aimux tracks coding agents in tmux panes and provides a live
+// watchroom for their status and output.
 package main
 
 import (

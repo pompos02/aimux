@@ -11,10 +11,19 @@ import (
 	"time"
 )
 
+// Agent is the pane-local state reported by an OpenCode or Copilot hook.
+// Pane is the stable identity; Target and Path are display metadata.
 type Agent struct {
-	Pane, Agent, Status, Target, Path string
+	Pane   string
+	Agent  string
+	Status string
+	Target string
+	Path   string
 }
 
+// cappedBuffer accepts all writes while retaining only a bounded prefix. This
+// lets child processes finish normally without allowing their output to grow
+// memory without bound.
 type cappedBuffer struct{ bytes.Buffer }
 
 func (b *cappedBuffer) Write(p []byte) (int, error) {
@@ -36,6 +45,8 @@ func output(ctx context.Context, name string, args ...string) ([]byte, error) {
 }
 
 func tmux(args ...string) ([]byte, error) {
+	// Every tmux call is user-facing or runs in a hook. A stuck server must not
+	// block either indefinitely.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	return output(ctx, "tmux", args...)
@@ -46,6 +57,8 @@ func setAgent(agent, status string) {
 	if pane == "" {
 		return
 	}
+	// Hook callers intentionally ignore tmux failures. Agent tools must keep
+	// running even if their pane disappears during shutdown.
 	tmux("set-option", "-p", "-t", pane, "@aimux_agent", agent)
 	if status == "" {
 		tmux("set-option", "-pu", "-t", pane, "@aimux_status")
@@ -53,6 +66,7 @@ func setAgent(agent, status string) {
 		tmux("set-option", "-p", "-t", pane, "@aimux_status", status)
 	}
 	if status == "waiting" || status == "done" {
+		// A result observed while its pane is already focused is not unseen.
 		focused, _ := tmux("display-message", "-p", "-t", pane, "#{&&:#{pane_active},#{&&:#{window_active},#{session_attached}}}")
 		if strings.TrimSpace(string(focused)) == "1" {
 			acknowledge(pane)
@@ -77,6 +91,8 @@ func acknowledge(pane string) {
 		return
 	}
 	status, _ := tmux("show-option", "-pqv", "-t", pane, "@aimux_status")
+	// Working is durable until the agent reports another state. Only statuses
+	// representing unseen user attention are acknowledged.
 	if value := strings.TrimSpace(string(status)); value == "waiting" || value == "done" {
 		tmux("set-option", "-pu", "-t", pane, "@aimux_status")
 	}
@@ -88,6 +104,8 @@ func agents() []Agent {
 }
 
 func loadAgents() ([]Agent, error) {
+	// One list-panes call keeps count and dashboard refreshes cheap across all
+	// sessions. A missing agent option marks a pane as unregistered.
 	const format = "#{pane_id}\t#{?@aimux_agent,#{@aimux_agent},-}\t#{?@aimux_status,#{@aimux_status},idle}\t#{session_name}:#{window_index}.#{pane_index}\t#{pane_current_path}"
 	out, err := tmux("list-panes", "-a", "-F", format)
 	if err != nil {
@@ -103,6 +121,7 @@ func parseAgents(out string) []Agent {
 	}
 	var result []Agent
 	for line := range strings.SplitSeq(out, "\n") {
+		// SplitN preserves tabs in the final path field.
 		fields := strings.SplitN(line, "\t", 5)
 		if len(fields) != 5 || fields[1] == "-" {
 			continue
@@ -139,6 +158,8 @@ func countSummary(agents []Agent) string {
 }
 
 func gitInfo(path string) string {
+	// The picker caches this result by path, so these commands run once per
+	// newly observed working directory rather than on every inventory poll.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	branch, _ := output(ctx, "git", "-C", path, "branch", "--show-current")

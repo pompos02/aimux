@@ -7,21 +7,33 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/sahilm/fuzzy"
 )
 
 const reset = "\x1b[0m"
 
 type picker struct {
-	agents                []Agent
-	cursor, width, height int
-	filter                string
-	filtering             bool
-	git                   map[string]string
-	gitPending            map[string]bool
-	preview               string
-	previewTop            int
-	follow, previewBusy   bool
-	err                   error
+	// agents is the latest successful inventory. Poll failures leave it intact.
+	agents []Agent
+	// cursor indexes visibleAgents, not agents, because fuzzy search reorders it.
+	cursor        int
+	width, height int
+
+	filter    string
+	filtering bool
+
+	// git is a lifetime cache. gitPending prevents duplicate requests while a
+	// lookup is still running.
+	git        map[string]string
+	gitPending map[string]bool
+
+	preview    string
+	previewTop int
+	// previewBusy serializes capture-pane calls. follow pins the viewport to
+	// the bottom until the user scrolls.
+	follow, previewBusy bool
+
+	err error
 }
 
 type inventoryMsg struct {
@@ -91,6 +103,8 @@ func (p picker) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case inventoryTick:
 		return p, loadInventoryCmd
 	case inventoryMsg:
+		// Schedule the next poll only after this one completes. This keeps slow
+		// tmux servers from accumulating overlapping list-panes processes.
 		cmds := []tea.Cmd{inventoryTickCmd()}
 		if msg.err != nil {
 			p.err = msg.err
@@ -115,6 +129,8 @@ func (p picker) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return p, cmd
 	case previewMsg:
 		p.previewBusy = false
+		// Selection can change while capture-pane is running. Never render output
+		// from the pane that was previously selected.
 		if msg.pane != p.selectedPane() {
 			cmd := p.requestPreview()
 			return p, cmd
@@ -229,20 +245,24 @@ func (p *picker) resetPreview() {
 }
 
 func (p picker) visibleAgents() []Agent {
-	query := strings.ToLower(strings.TrimSpace(p.filter))
+	query := strings.TrimSpace(p.filter)
 	if query == "" {
 		return p.agents
 	}
-	visible := make([]Agent, 0, len(p.agents))
-	for _, agent := range p.agents {
+	targets := make([]string, len(p.agents))
+	for i, agent := range p.agents {
 		status := agent.Status
 		if status == "waiting" {
 			status += " blocked"
 		}
-		text := status + " " + projectName(agent.Path) + " " + p.git[agent.Path] + " " + agent.Target
-		if strings.Contains(strings.ToLower(text), query) {
-			visible = append(visible, agent)
-		}
+		targets[i] = status + " " + projectName(agent.Path) + " " + p.git[agent.Path] + " " + agent.Target
+	}
+	// fuzzy.Find both filters and ranks, giving fzf-like ordering without
+	// coupling the picker to a full list widget.
+	matches := fuzzy.Find(query, targets)
+	visible := make([]Agent, len(matches))
+	for i, match := range matches {
+		visible[i] = p.agents[match.Index]
 	}
 	return visible
 }
@@ -262,6 +282,8 @@ func (p *picker) setAgents(agents []Agent, selected string, oldCursor int) {
 		p.cursor = 0
 		return
 	}
+	// Pane IDs survive reordering and inventory refreshes. If a pane vanished,
+	// the clamped old index selects the nearest surviving row.
 	p.cursor = min(oldCursor, len(visible)-1)
 	for i, agent := range visible {
 		if agent.Pane == selected {
@@ -275,6 +297,7 @@ func (p *picker) scrollPreview(delta int) {
 	lines := previewLines(p.preview)
 	maxTop := max(0, len(lines)-p.bodyHeight())
 	if p.follow {
+		// Materialize the current bottom position before leaving follow mode.
 		p.previewTop = maxTop
 		p.follow = false
 	}
@@ -289,6 +312,7 @@ func (p picker) bodyHeight() int { return max(1, p.height-3) }
 func (p picker) View() tea.View {
 	bodyHeight := p.bodyHeight()
 	visible := p.visibleAgents()
+	// Below 80 cells the preview costs more readability than it provides.
 	wide := p.width >= 80
 	leftWidth := p.width
 	if wide {
@@ -363,6 +387,8 @@ func fit(value string, width int) string {
 	if width <= 0 {
 		return ""
 	}
+	// Truncate by display cells and terminate pane-provided styles before the
+	// surrounding UI is rendered.
 	value = ansi.Truncate(value, width, "") + reset
 	return value + strings.Repeat(" ", max(0, width-ansi.StringWidth(value)))
 }
