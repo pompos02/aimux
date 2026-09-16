@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// Agent is the pane-local state reported by an OpenCode or Copilot hook.
+// Agent is the pane-local state reported an agent hook.
 // Pane is the stable identity; Target and Path are display metadata.
 type Agent struct {
 	Pane   string
@@ -26,28 +26,29 @@ type Agent struct {
 // memory without bound.
 type cappedBuffer struct{ bytes.Buffer }
 
+const outLimit = 4 << 20
+
 func (b *cappedBuffer) Write(p []byte) (int, error) {
-	const limit = 4 << 20
-	n := len(p)
-	if remaining := limit - b.Len(); remaining > 0 {
+	if remaining := outLimit - b.Len(); remaining > 0 {
 		_, _ = b.Buffer.Write(p[:min(len(p), remaining)])
 	}
-	return n, nil
+	return len(p), nil
 }
 
 func output(ctx context.Context, name string, args ...string) ([]byte, error) {
-	// ponytail: 4 MiB bounds subprocess output; raise it if 200 tmux rows ever exceed that.
 	var out cappedBuffer
 	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Stdout = &out
+	cmd.Stdout = &out // implicit call of cappedBuffer.Write()
 	err := cmd.Run()
 	return out.Bytes(), err
 }
 
+const stuckTimeout = 2
+
 func tmux(args ...string) ([]byte, error) {
 	// Every tmux call is user-facing or runs in a hook. A stuck server must not
 	// block either indefinitely.
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), stuckTimeout*time.Second)
 	defer cancel()
 	return output(ctx, "tmux", args...)
 }
@@ -157,10 +158,15 @@ func countSummary(agents []Agent) string {
 	return fmt.Sprintf("[%d,%d,%d,%d]", working, waiting, idle, done)
 }
 
-func gitInfo(path string) string {
+type GitInfo struct {
+	branch         string
+	added, removed int
+}
+
+func gitInfo(path string) GitInfo {
 	// The picker caches this result by path, so these commands run once per
-	// newly observed working directory rather than on every inventory poll.
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	// newly observed working directory rather than on every poll.
+	ctx, cancel := context.WithTimeout(context.Background(), stuckTimeout*time.Second)
 	defer cancel()
 	branch, _ := output(ctx, "git", "-C", path, "branch", "--show-current")
 	if len(strings.TrimSpace(string(branch))) == 0 {
@@ -168,12 +174,12 @@ func gitInfo(path string) string {
 	}
 	name := strings.TrimSpace(string(branch))
 	if name == "" {
-		return ""
+		return GitInfo{}
 	}
-	// ponytail: tracked changes only; add an untracked scan if it becomes useful.
+	// show only git tracked changes
 	diff, _ := output(ctx, "git", "-C", path, "diff", "--no-ext-diff", "--numstat", "HEAD")
 	added, removed := parseNumstat(string(diff))
-	return name + " +" + strconv.Itoa(added) + "/-" + strconv.Itoa(removed)
+	return GitInfo{name, added, removed}
 }
 
 func parseNumstat(out string) (added, removed int) {

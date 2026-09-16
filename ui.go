@@ -2,6 +2,7 @@ package main
 
 import (
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -10,7 +11,13 @@ import (
 	"github.com/sahilm/fuzzy"
 )
 
-const reset = "\x1b[0m"
+const (
+	reset  = "\x1b[0m"
+	green  = "\x1b[32m"
+	yellow = "\x1b[33m"
+	cyan   = "\x1b[36m"
+	dim    = "\x1b[2m"
+)
 
 type picker struct {
 	// agents is the latest successful inventory. Poll failures leave it intact.
@@ -84,7 +91,7 @@ func previewTickCmd() tea.Cmd {
 }
 
 func gitCmd(path string) tea.Cmd {
-	return func() tea.Msg { return gitMsg{path, gitInfo(path)} }
+	return func() tea.Msg { return gitMsg{path, gitInfoDisplay(path)} }
 }
 
 func switchPaneCmd(pane string) tea.Cmd {
@@ -396,13 +403,13 @@ func fit(value string, width int) string {
 func statusLabel(status string) string {
 	switch status {
 	case "working":
-		return "\x1b[32m● working" + reset
+		return green + "● working" + reset
 	case "waiting":
-		return "\x1b[33m! blocked" + reset
+		return yellow + "! blocked" + reset
 	case "done":
-		return "\x1b[36m✓ done   " + reset
+		return cyan + "✓ done   " + reset
 	default:
-		return "\x1b[2m○ idle   " + reset
+		return dim + "○ idle   " + reset
 	}
 }
 
@@ -411,4 +418,9 @@ func projectName(path string) string {
 		return "-"
 	}
 	return filepath.Base(path)
+}
+
+func gitInfoDisplay(path string) string {
+	info := gitInfo(path)
+	return info.branch + " +" + strconv.Itoa(info.added) + "/-" + strconv.Itoa(info.removed)
 }
