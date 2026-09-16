@@ -492,7 +492,7 @@ func activeFor(started int64) string {
 	if started <= 0 {
 		return "-"
 	}
-	elapsed := max(time.Duration(0), time.Since(time.UnixMilli(started))).Truncate(time.Second)
+	elapsed := time.Duration(max(int64(0), time.Now().Unix()-started/1000)) * time.Second
 	return fmt.Sprintf("%02d:%02d:%02d", elapsed/time.Hour, elapsed/time.Minute%60, elapsed/time.Second%60)
 }
 
