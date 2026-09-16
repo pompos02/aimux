@@ -1,13 +1,15 @@
 package main
 
 import (
+	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/sahilm/fuzzy"
 )
 
 const (
@@ -20,17 +22,16 @@ const (
 	bold   = "\x1b[1m"
 )
 
-var selected = ansi.Style{}.BackgroundColor(ansi.RGBColor{R: 38, G: 61, B: 57}).String()
+var (
+	selected      = ansi.Style{}.BackgroundColor(ansi.RGBColor{R: 38, G: 61, B: 57}).String()
+	workingFrames = [...]string{"◐", "◓", "◑", "◒"}
+)
 
 type picker struct {
 	// agents is the latest successful inventory. Poll failures leave it intact.
-	agents []Agent
-	// cursor indexes visibleAgents, not agents, because fuzzy search reorders it.
+	agents        []Agent
 	cursor        int
 	width, height int
-
-	filter    string
-	filtering bool
 
 	// git is a lifetime cache. gitPending prevents duplicate requests while a
 	// lookup is still running.
@@ -41,7 +42,7 @@ type picker struct {
 	previewTop int
 	// previewBusy serializes capture-pane calls. follow pins the viewport to
 	// the bottom until the user scrolls.
-	follow, previewBusy bool
+	follow, previewBusy, inputMode bool
 
 	err error
 }
@@ -58,6 +59,10 @@ type previewMsg struct {
 type previewTick struct{}
 type gitMsg struct{ path, info string }
 type switchMsg struct{ err error }
+type inputMsg struct {
+	pane, content string
+	err           error
+}
 
 func pick() error {
 	final, err := tea.NewProgram(newPicker()).Run()
@@ -89,8 +94,12 @@ func captureCmd(pane string) tea.Cmd {
 	}
 }
 
-func previewTickCmd() tea.Cmd {
-	return tea.Tick(300*time.Millisecond, func(time.Time) tea.Msg { return previewTick{} })
+func previewTickCmd(inputMode bool) tea.Cmd {
+	delay := 300 * time.Millisecond
+	if inputMode {
+		delay = 100 * time.Millisecond
+	}
+	return tea.Tick(delay, func(time.Time) tea.Msg { return previewTick{} })
 }
 
 func gitCmd(path string) tea.Cmd {
@@ -104,12 +113,43 @@ func switchPaneCmd(pane string) tea.Cmd {
 	}
 }
 
+func sendKeyCmd(pane, key string, literal bool) tea.Cmd {
+	return func() tea.Msg {
+		args := []string{"send-keys", "-t", pane}
+		if literal {
+			args = append(args, "-l")
+		}
+		if _, err := tmux(append(args, key)...); err != nil {
+			return inputMsg{pane: pane, err: err}
+		}
+		out, err := tmux("capture-pane", "-p", "-e", "-S", "-200", "-t", pane)
+		return inputMsg{pane: pane, content: string(out), err: err}
+	}
+}
+
+func pasteCmd(pane, content string) tea.Cmd {
+	return func() tea.Msg {
+		if err := tmuxInput(content, "load-buffer", "-"); err != nil {
+			return inputMsg{pane: pane, err: err}
+		}
+		if _, err := tmux("paste-buffer", "-t", pane, "-p", "-d"); err != nil {
+			return inputMsg{pane: pane, err: err}
+		}
+		out, err := tmux("capture-pane", "-p", "-e", "-S", "-200", "-t", pane)
+		return inputMsg{pane: pane, content: string(out), err: err}
+	}
+}
+
 func (p picker) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := message.(type) {
 	case tea.WindowSizeMsg:
 		p.width, p.height = msg.Width, msg.Height
 	case tea.KeyPressMsg:
 		return p.updateKey(msg)
+	case tea.PasteMsg:
+		if pane := p.selectedPane(); p.inputMode && pane != "" && msg.Content != "" {
+			return p, pasteCmd(pane, msg.Content)
+		}
 	case inventoryTick:
 		return p, loadInventoryCmd
 	case inventoryMsg:
@@ -151,7 +191,16 @@ func (p picker) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			p.preview = msg.content
 			p.err = nil
 		}
-		return p, previewTickCmd()
+		return p, previewTickCmd(p.inputMode)
+	case inputMsg:
+		if msg.pane != p.selectedPane() {
+			return p, nil
+		}
+		p.err = msg.err
+		if msg.err == nil {
+			p.preview = msg.content
+		}
+		return p, nil
 	case gitMsg:
 		selected := p.selectedPane()
 		p.git[msg.path] = msg.info
@@ -170,50 +219,32 @@ func (p picker) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 
 func (p picker) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
-	if key == "ctrl+c" {
-		return p, tea.Quit
-	}
-	if p.filtering {
-		selected, cursor := p.selectedPane(), p.cursor
-		switch key {
-		case "esc":
-			p.filter, p.filtering = "", false
-		case "enter":
-			p.filtering = false
-			if pane := p.selectedPane(); pane != "" {
-				return p, switchPaneCmd(pane)
-			}
-		case "backspace":
-			runes := []rune(p.filter)
-			if len(runes) > 0 {
-				p.filter = string(runes[:len(runes)-1])
-			}
-		default:
-			p.filter += msg.Key().Text
+	if p.inputMode {
+		if key == "esc" {
+			p.inputMode = false
+			return p, nil
 		}
-		p.setAgents(p.agents, selected, cursor)
-		if p.selectedPane() != selected {
-			p.resetPreview()
-			cmd := p.requestPreview()
-			return p, cmd
+		if pane := p.selectedPane(); pane != "" {
+			if key, literal := inputKey(msg); key != "" {
+				return p, sendKeyCmd(pane, key, literal)
+			}
 		}
 		return p, nil
+	}
+	if key == "ctrl+c" {
+		return p, tea.Quit
 	}
 
 	before := p.selectedPane()
 	switch key {
-	case "q":
+	case "q", "esc":
 		return p, tea.Quit
-	case "esc":
-		if p.filter == "" {
-			return p, tea.Quit
+	case "i":
+		if before != "" {
+			p.inputMode = true
 		}
-		p.filter = ""
-		p.setAgents(p.agents, before, p.cursor)
-	case "/":
-		p.filtering = true
 	case "j", "down":
-		if p.cursor < len(p.visibleAgents())-1 {
+		if p.cursor < len(p.agents)-1 {
 			p.cursor++
 		}
 	case "k", "up":
@@ -221,7 +252,7 @@ func (p picker) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			p.cursor--
 		}
 	case "G":
-		if n := len(p.visibleAgents()); n > 0 {
+		if n := len(p.agents); n > 0 {
 			p.cursor = n - 1
 		}
 	case "ctrl+u":
@@ -241,6 +272,35 @@ func (p picker) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return p, nil
 }
 
+func inputKey(msg tea.KeyPressMsg) (string, bool) {
+	switch msg.String() {
+	case "enter":
+		return "Enter", false
+	case "backspace":
+		return "BSpace", false
+	case "tab":
+		return "Tab", false
+	case "up":
+		return "Up", false
+	case "down":
+		return "Down", false
+	case "left":
+		return "Left", false
+	case "right":
+		return "Right", false
+	}
+	key := msg.Key()
+	if key.Text != "" {
+		return key.Text, true
+	}
+	// ponytail: modifiers are ignored; add explicit control-sequence mapping if
+	// full terminal key forwarding becomes necessary.
+	if unicode.IsPrint(key.Code) {
+		return string(key.Code), true
+	}
+	return "", false
+}
+
 func (p *picker) requestPreview() tea.Cmd {
 	pane := p.selectedPane()
 	if pane == "" || p.previewBusy {
@@ -254,48 +314,24 @@ func (p *picker) resetPreview() {
 	p.preview, p.previewTop, p.follow = "", 0, true
 }
 
-func (p picker) visibleAgents() []Agent {
-	query := strings.TrimSpace(p.filter)
-	if query == "" {
-		return p.agents
-	}
-	targets := make([]string, len(p.agents))
-	for i, agent := range p.agents {
-		status := agent.Status
-		if status == "waiting" {
-			status += " blocked"
-		}
-		targets[i] = status + " " + agent.Session + " " + p.git[agent.Path] + " " + agent.Title
-	}
-	// fuzzy.Find both filters and ranks, giving fzf-like ordering without
-	// coupling the picker to a full list widget.
-	matches := fuzzy.Find(query, targets)
-	visible := make([]Agent, len(matches))
-	for i, match := range matches {
-		visible[i] = p.agents[match.Index]
-	}
-	return visible
-}
-
 func (p picker) selectedPane() string {
-	agents := p.visibleAgents()
-	if p.cursor < 0 || p.cursor >= len(agents) {
+	if p.cursor < 0 || p.cursor >= len(p.agents) {
 		return ""
 	}
-	return agents[p.cursor].Pane
+	return p.agents[p.cursor].Pane
 }
 
 func (p *picker) setAgents(agents []Agent, selected string, oldCursor int) {
+	slices.SortStableFunc(agents, func(a, b Agent) int { return statusRank(a.Status) - statusRank(b.Status) })
 	p.agents = agents
-	visible := p.visibleAgents()
-	if len(visible) == 0 {
+	if len(agents) == 0 {
 		p.cursor = 0
 		return
 	}
 	// Pane IDs survive reordering and inventory refreshes. If a pane vanished,
 	// the clamped old index selects the nearest surviving row.
-	p.cursor = min(oldCursor, len(visible)-1)
-	for i, agent := range visible {
+	p.cursor = min(oldCursor, len(agents)-1)
+	for i, agent := range agents {
 		if agent.Pane == selected {
 			p.cursor = i
 			return
@@ -330,11 +366,21 @@ func (p picker) bodyHeight() int {
 
 func (p picker) View() tea.View {
 	listHeight, previewHeight := p.panelHeights()
-	visible := p.visibleAgents()
-	remaining := max(0, p.width-25)
-	sessionWidth := max(6, remaining/4)
-	gitWidth := max(10, remaining*2/5)
-	columns := fit(bold+"#"+reset, 4) + fit(bold+"STATUS"+reset, 11) + fit(bold+"SESSION"+reset, sessionWidth) + fit(bold+"BRANCH"+reset, gitWidth) + fit(bold+"TIME"+reset, 10) + bold + "TITLE" + reset
+	visible := p.agents
+	numberWidth, statusWidth, sessionWidth, gitWidth, timeWidth := 3, 6, 7, 6, 8
+	for i, agent := range visible {
+		numberWidth = max(numberWidth, 2+len(strconv.Itoa(i+1)))
+		statusWidth = max(statusWidth, ansi.StringWidth(statusLabel(agent.Status)))
+		sessionWidth = max(sessionWidth, ansi.StringWidth(agent.Session))
+		gitWidth = max(gitWidth, ansi.StringWidth(p.git[agent.Path]))
+		timeWidth = max(timeWidth, ansi.StringWidth(activeFor(agent.Started)))
+	}
+	numberWidth += 3
+	statusWidth += 3
+	sessionWidth += 3
+	gitWidth += 3
+	timeWidth += 3
+	columns := fit(bold+"  #"+reset, numberWidth) + fit(bold+"SESSION"+reset, sessionWidth) + fit(bold+"STATUS"+reset, statusWidth) + fit(bold+"BRANCH"+reset, gitWidth) + fit(bold+"TIME"+reset, timeWidth) + bold + "TITLE" + reset
 	rows := make([]string, listHeight)
 	start := max(0, p.cursor-listHeight+1)
 	for row := range listHeight {
@@ -343,16 +389,16 @@ func (p picker) View() tea.View {
 		isSelected := false
 		if i < len(visible) {
 			agent := visible[i]
-			number := "  " + strconv.Itoa(i+1)
+			number := "  " + cyan + strconv.Itoa(i+1) + reset
 			if i == p.cursor {
-				number = "> " + strconv.Itoa(i+1)
+				number = "> " + cyan + strconv.Itoa(i+1) + reset
 				isSelected = true
 			}
 			title := agent.Title
 			if title == "" {
 				title = "-"
 			}
-			entry = fit(number, 4) + fit(statusLabel(agent.Status), 11) + fit(agent.Session, sessionWidth) + fit(p.git[agent.Path], gitWidth) + fit(dim+activeFor(agent.Started)+reset, 10) + title
+			entry = fit(number, numberWidth) + fit(agent.Session, sessionWidth) + fit(statusLabel(agent.Status), statusWidth) + fit(p.git[agent.Path], gitWidth) + fit(activeFor(agent.Started), timeWidth) + title
 		} else if len(visible) == 0 && row == 0 {
 			entry = "No registered agents"
 		}
@@ -362,22 +408,24 @@ func (p picker) View() tea.View {
 		}
 	}
 
+	footer := "  j/k move  Enter switch  i input  q quit  Ctrl-U/D preview"
+	border, label := dim, " Preview "
+	if p.inputMode {
+		footer = "Esc exit input mode"
+		border, label = green, " INPUT "
+	}
+	innerWidth := max(0, p.width-2)
 	preview := make([]string, previewHeight)
 	for row := range previewHeight {
-		preview[row] = fit(p.previewLine(row, previewHeight), p.width)
+		preview[row] = border + "│" + reset + fit(p.previewLine(row, previewHeight), innerWidth) + border + "│" + reset
 	}
-	separator := strings.Repeat("─", max(0, p.width))
-	footer := "j/k move  / filter  Enter switch  q quit  Ctrl-U/D preview"
-	if p.filtering {
-		footer = "/" + p.filter + "_"
-	} else if p.filter != "" {
-		footer = "/" + p.filter + "  Esc clear  Enter switch  q quit"
-	}
+	top := fit(border+"┌─"+reset+bold+label+reset+border+strings.Repeat("─", max(0, p.width-ansi.StringWidth(label)-3))+"┐"+reset, p.width)
+	bottom := fit(border+"└"+strings.Repeat("─", innerWidth)+"┘"+reset, p.width)
 	if p.err != nil {
 		footer = p.err.Error()
 	}
 	content := fit(columns, p.width) + "\n" + strings.Join(rows, "\n") + "\n" +
-		fit(bold+"# Preview"+reset, p.width) + "\n" + separator + "\n" + strings.Join(preview, "\n") + "\n" + fit(footer, p.width)
+		top + "\n" + strings.Join(preview, "\n") + "\n" + bottom + "\n" + fit(footer, p.width)
 	view := tea.NewView(content)
 	view.AltScreen = true
 	return view
@@ -397,10 +445,11 @@ func (p picker) previewLine(row, height int) string {
 }
 
 func previewLines(preview string) []string {
+	preview = strings.TrimRight(preview, " \t\r\n")
 	if preview == "" {
 		return nil
 	}
-	return strings.Split(strings.TrimSuffix(preview, "\n"), "\n")
+	return strings.Split(preview, "\n")
 }
 
 func fit(value string, width int) string {
@@ -416,13 +465,26 @@ func fit(value string, width int) string {
 func statusLabel(status string) string {
 	switch status {
 	case "working":
-		return green + "● working" + reset
+		return green + workingFrames[time.Now().UnixMilli()/500%int64(len(workingFrames))] + " working" + reset
 	case "waiting":
 		return yellow + "! blocked" + reset
 	case "done":
-		return cyan + "✓ done   " + reset
+		return cyan + "● done   " + reset
 	default:
 		return dim + "○ idle   " + reset
+	}
+}
+
+func statusRank(status string) int {
+	switch status {
+	case "done":
+		return 0
+	case "waiting":
+		return 1
+	case "working":
+		return 2
+	default:
+		return 3
 	}
 }
 
@@ -430,7 +492,8 @@ func activeFor(started int64) string {
 	if started <= 0 {
 		return "-"
 	}
-	return max(time.Duration(0), time.Since(time.UnixMilli(started))).Truncate(time.Second).String()
+	elapsed := max(time.Duration(0), time.Since(time.UnixMilli(started))).Truncate(time.Second)
+	return fmt.Sprintf("%02d:%02d:%02d", elapsed/time.Hour, elapsed/time.Minute%60, elapsed/time.Second%60)
 }
 
 func gitInfoDisplay(path string) string {

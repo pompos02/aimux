@@ -55,6 +55,14 @@ func tmux(args ...string) ([]byte, error) {
 	return output(ctx, "tmux", args...)
 }
 
+func tmuxInput(input string, args ...string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), stuckTimeout*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "tmux", args...)
+	cmd.Stdin = strings.NewReader(input)
+	return cmd.Run()
+}
+
 func setAgent(_ string, status string) {
 	pane := os.Getenv("TMUX_PANE")
 	if pane == "" {
