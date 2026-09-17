@@ -63,21 +63,16 @@ func tmuxInput(input string, args ...string) error {
 	return cmd.Run()
 }
 
-func setAgent(_ string, status string) {
+func setAgent(status string) {
 	pane := os.Getenv("TMUX_PANE")
 	if pane == "" {
 		return
 	}
 	// Hook callers intentionally ignore tmux failures. Agent tools must keep
 	// running even if their pane disappears during shutdown.
-	tmux("set-option", "-p", "-t", pane, "@aimux_agent", "1")
 	tmux("set-option", "-po", "-t", pane, "@aimux_started", strconv.FormatInt(time.Now().UnixMilli(), 10))
-	if status == "" {
-		tmux("set-option", "-pu", "-t", pane, "@aimux_status")
-	} else {
-		tmux("set-option", "-p", "-t", pane, "@aimux_status", status)
-	}
-	if status == "waiting" || status == "done" {
+	tmux("set-option", "-p", "-t", pane, "@aimux_status", status)
+	if status == "done" {
 		// A result observed while its pane is already focused is not unseen.
 		focused, _ := tmux("display-message", "-p", "-t", pane, "#{&&:#{pane_active},#{&&:#{window_active},#{session_attached}}}")
 		if strings.TrimSpace(string(focused)) == "1" {
@@ -91,7 +86,6 @@ func clearAgent() {
 	if pane == "" {
 		return
 	}
-	tmux("set-option", "-pu", "-t", pane, "@aimux_agent")
 	tmux("set-option", "-pu", "-t", pane, "@aimux_status")
 	tmux("set-option", "-pu", "-t", pane, "@aimux_started")
 }
@@ -104,10 +98,8 @@ func acknowledge(pane string) {
 		return
 	}
 	status, _ := tmux("show-option", "-pqv", "-t", pane, "@aimux_status")
-	// Working is durable until the agent reports another state. Only statuses
-	// representing unseen user attention are acknowledged.
-	if value := strings.TrimSpace(string(status)); value == "waiting" || value == "done" {
-		tmux("set-option", "-pu", "-t", pane, "@aimux_status")
+	if strings.TrimSpace(string(status)) == "done" {
+		tmux("set-option", "-p", "-t", pane, "@aimux_status", "idle")
 	}
 }
 
@@ -118,10 +110,10 @@ func agents() []Agent {
 
 func loadAgents() ([]Agent, error) {
 	// One list-panes call keeps count and dashboard refreshes cheap across all
-	// sessions. A missing agent option marks a pane as unregistered.
+	// sessions. A missing status option marks a pane as unregistered.
 	// ponytail: pane_title is supplied by the harness; add hook metadata only if
 	// a harness stops setting useful terminal titles.
-	const format = "#{pane_id}\t#{?@aimux_agent,1,-}\t#{?@aimux_status,#{@aimux_status},idle}\t#{session_name}\t#{pane_title}\t#{@aimux_started}\t#{session_name}:#{window_index}.#{pane_index}\t#{pane_current_path}"
+	const format = "#{pane_id}\t#{?@aimux_status,1,-}\t#{@aimux_status}\t#{session_name}\t#{pane_title}\t#{@aimux_started}\t#{session_name}:#{window_index}.#{pane_index}\t#{pane_current_path}"
 	out, err := tmux("list-panes", "-a", "-F", format)
 	if err != nil {
 		return nil, err
@@ -157,20 +149,20 @@ func countAgents() string {
 }
 
 func countSummary(agents []Agent) string {
-	var working, waiting, idle, done int
+	var working, blocked, idle, done int
 	for _, agent := range agents {
 		switch agent.Status {
 		case "working":
 			working++
-		case "waiting":
-			waiting++
+		case "blocked":
+			blocked++
 		case "idle":
 			idle++
 		case "done":
 			done++
 		}
 	}
-	return fmt.Sprintf("[#[fg=green]%d#[default] #[fg=red]%d#[default] #[dim]%d#[default] #[fg=cyan]%d#[default]]", working, waiting, idle, done)
+	return fmt.Sprintf("[#[fg=green]%d#[default] #[fg=red]%d#[default] #[dim]%d#[default] #[fg=cyan]%d#[default]]", working, blocked, idle, done)
 }
 
 type GitInfo struct {

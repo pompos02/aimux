@@ -22,7 +22,7 @@ Add this to `~/.tmux.conf`:
 # (Optional) Prefix + a opens the dashboard.
 bind a display-popup -x C -y C -w 70% -h 70% -E "~/.local/bin/aimux pick"
 
-# Clear waiting/done when its pane is focused.
+# Completed output becomes idle when its pane is focused.
 set-hook -g pane-focus-in 'run-shell -b "~/.local/bin/aimux acknowledge #{pane_id}"'
 ```
 
@@ -39,86 +39,50 @@ Reload tmux with `tmux source-file ~/.tmux.conf`.
 Hooks must run inside the agent's tmux pane. They report this lifecycle:
 
 ```sh
-aimux set <agent_name>          # register an idle agent
-aimux set <agent_name> working  # processing
-aimux set <agent_name> waiting  # needs user input
-aimux set <agent_name> done     # finished
-aimux clear                     # agent exited
+aimux set idle     # registered, no unobserved output
+aimux set working  # agent is running
+aimux set blocked  # waiting for user input
+aimux set done     # stopped with unobserved output
+aimux clear        # agent exited
 ```
 
-these should be automatic and configured by hooks
+These transitions should be automatic and configured by hooks. A missing
+`@aimux_status` means the pane is not registered. `aimux acknowledge` changes
+only `done` to `idle`; blocked agents remain blocked until their agent resumes.
 
 ### OpenCode
 
-Create `~/.config/opencode/plugins/aimux.ts`:
-
-```ts
-import type { Plugin } from '@opencode-ai/plugin'
-
-export const Aimux: Plugin = async ({ $ }) => {
-  const report = async (status = '') => {
-    try {
-      await $`aimux set opencode ${status}`.quiet()
-    } catch {}
-  }
-
-  await report()
-
-  return {
-    event: async ({ event }) => {
-      if (event.type === 'session.status') {
-        await report(event.properties.status.type === 'busy' ? 'working' : 'done')
-      }
-      if (event.type === 'permission.asked' || event.type === 'question.asked') {
-        await report('waiting')
-      }
-      if (event.type === 'permission.replied' || event.type === 'question.replied') {
-        await report('working')
-      }
-      if (event.type === 'session.idle') await report('done')
-    },
-    dispose: async () => {
-      try {
-        await $`aimux clear`.quiet()
-      } catch {}
-    },
-  }
-}
-```
+Use a plugin in `~/.config/opencode/plugins/` and aggregate all sessions in the
+pane. Report `working` while any session is `busy` or `retry`, `blocked` while
+any permission or question remains unanswered, and `done` when all tracked
+sessions are idle. Clear the pane from the plugin's `dispose` hook.
 
 ### GitHub Copilot CLI
 
-Create `~/.copilot/hooks/aimux.json`:
+Configure `~/.copilot/hooks/*.json` with these mappings:
 
-```json
-{
-  "version": 1,
-  "hooks": {
-    "sessionStart": [
-      { "type": "command", "exec": "aimux", "args": ["set", "copilot"] }
-    ],
-    "userPromptSubmitted": [
-      { "type": "command", "exec": "aimux", "args": ["set", "copilot", "working"] }
-    ],
-    "notification": [
-      {
-        "type": "command",
-        "matcher": "permission_prompt|elicitation_dialog",
-        "exec": "aimux",
-        "args": ["set", "copilot", "waiting"]
-      }
-    ],
-    "preToolUse": [
-      { "type": "command", "exec": "aimux", "args": ["set", "copilot", "working"] }
-    ],
-    "agentStop": [
-      { "type": "command", "exec": "aimux", "args": ["set", "copilot", "done"] }
-    ],
-    "sessionEnd": [
-      { "type": "command", "exec": "aimux", "args": ["clear"] }
-    ]
-  }
-}
+| Event | Status |
+| --- | --- |
+| `sessionStart` | `idle` |
+| `userPromptSubmitted`, `preToolUse` | `working` |
+| `notification` matching `permission_prompt\|elicitation_dialog` | `blocked` |
+| `agentStop` | `done` |
+| `sessionEnd` | `aimux clear` |
+
+Copilot's configuration hooks do not expose dialog completion. Add a user
+extension at `~/.copilot/extensions/aimux/extension.mjs` that reports `working`
+on `permission.completed`, `user_input.completed`, and `elicitation.completed`.
+
+```js
+import { execFile } from "node:child_process";
+import { joinSession } from "@github/copilot-sdk/extension";
+
+const session = await joinSession();
+const working = () => execFile("aimux", ["set", "working"], () => {});
+
+session.on("permission.completed", working);
+session.on("user_input.completed", working);
+session.on("elicitation.completed", working);
 ```
 
 ## Controls

@@ -109,6 +109,9 @@ func gitCmd(path string) tea.Cmd {
 func switchPaneCmd(pane string) tea.Cmd {
 	return func() tea.Msg {
 		_, err := tmux("switch-client", "-t", pane)
+		if err == nil {
+			acknowledge(pane)
+		}
 		return switchMsg{err}
 	}
 }
@@ -466,7 +469,7 @@ func statusLabel(status string) string {
 	switch status {
 	case "working":
 		return green + workingFrames[time.Now().UnixMilli()/500%int64(len(workingFrames))] + " working" + reset
-	case "waiting":
+	case "blocked":
 		return red + "! blocked" + reset
 	case "done":
 		return cyan + "● done   " + reset
@@ -479,7 +482,7 @@ func statusRank(status string) int {
 	switch status {
 	case "done":
 		return 0
-	case "waiting":
+	case "blocked":
 		return 1
 	case "working":
 		return 2

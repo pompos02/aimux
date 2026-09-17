@@ -66,24 +66,15 @@ func runAcknowledge(args []string) {
 }
 
 func runSet(args []string) {
-	if len(args) < 1 || len(args) > 2 {
+	if len(args) != 1 {
 		usage()
-	}
-	status := ""
-	if len(args) == 2 {
-		status = args[1]
 	}
 	switch args[0] {
-	case "opencode", "copilot":
+	case "working", "blocked", "idle", "done":
 	default:
 		usage()
 	}
-	switch status {
-	case "", "working", "waiting", "done":
-	default:
-		usage()
-	}
-	setAgent(args[0], status)
+	setAgent(args[0])
 }
 
 func runPick(args []string) {
@@ -98,6 +89,6 @@ func runPick(args []string) {
 
 func usage() {
 	fmt.Fprintln(os.Stderr,
-		"usage: aimux set AGENT [working|waiting|done] | clear | acknowledge [PANE] | list | count | pick")
+		"usage: aimux set working|blocked|idle|done | clear | acknowledge [PANE] | list | count | pick")
 	os.Exit(2)
 }
