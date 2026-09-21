@@ -85,6 +85,24 @@ session.on("user_input.completed", working);
 session.on("elicitation.completed", working);
 ```
 
+### Codex CLI
+
+Add the following as `~/.codex/hooks.json`
+
+```json
+{
+  "description": "Report Codex lifecycle state to aimux.",
+  "hooks": {
+    "SessionStart": [{ "hooks": [{ "type": "command", "command": "aimux set idle", "timeout": 2 }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "aimux set working", "timeout": 2 }] }],
+    "PreToolUse": [{ "hooks": [{ "type": "command", "command": "aimux set working", "timeout": 2 }] }],
+    "PermissionRequest": [{ "hooks": [{ "type": "command", "command": "aimux set blocked", "timeout": 2 }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "aimux set done", "timeout": 2 }] }],
+    "SessionEnd": [{ "hooks": [{ "type": "command", "command": "aimux clear", "timeout": 2 }] }]
+  }
+}
+```
+
 ## Controls
 
 | Key | Action |

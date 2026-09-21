@@ -116,6 +116,16 @@ func switchPaneCmd(pane string) tea.Cmd {
 	}
 }
 
+func killPane(pane string) tea.Cmd {
+	return func() tea.Msg {
+		_, err := tmux("kill-pane", "-t", pane)
+		if err != nil {
+			return switchMsg{err}
+		}
+		return nil
+	}
+}
+
 func sendKeyCmd(pane, key string, literal bool) tea.Cmd {
 	return func() tea.Msg {
 		args := []string{"send-keys", "-t", pane}
@@ -253,6 +263,10 @@ func (p picker) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "k", "up":
 		if p.cursor > 0 {
 			p.cursor--
+		}
+	case "ctrl+x":
+		if before != "" {
+			return p, killPane(before);
 		}
 	case "G":
 		if n := len(p.agents); n > 0 {
@@ -411,7 +425,7 @@ func (p picker) View() tea.View {
 		}
 	}
 
-	footer := "  j/k move  Enter switch  i input  q quit  Ctrl-U/D preview"
+	footer := "  j/k move  Enter switch  i input  q quit  Ctrl-U/D preview Ctrl-X Delete"
 	border, label := dim, " Preview "
 	if p.inputMode {
 		footer = "Esc exit input mode"
