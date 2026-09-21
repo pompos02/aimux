@@ -33,10 +33,8 @@ type picker struct {
 	cursor        int
 	width, height int
 
-	// git is a lifetime cache. gitPending prevents duplicate requests while a
-	// lookup is still running.
-	git        map[string]string
-	gitPending map[string]bool
+	// git is a lifetime cache; its presence also reserves in-flight lookups.
+	git map[string]string
 
 	preview    string
 	previewTop int
@@ -57,7 +55,10 @@ type previewMsg struct {
 	err           error
 }
 type previewTick struct{}
-type gitMsg struct{ path, info string }
+type gitMsg struct {
+	path,
+	info string
+}
 type switchMsg struct{ err error }
 type inputMsg struct {
 	pane, content string
@@ -73,7 +74,7 @@ func pick() error {
 }
 
 func newPicker() picker {
-	return picker{width: 100, height: 24, git: map[string]string{}, gitPending: map[string]bool{}, follow: true}
+	return picker{width: 100, height: 24, git: map[string]string{}, follow: true}
 }
 
 func (p picker) Init() tea.Cmd { return loadInventoryCmd }
@@ -177,8 +178,11 @@ func (p picker) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		p.setAgents(msg.agents, selected, p.cursor)
 		p.err = nil
 		for _, agent := range msg.agents {
-			if agent.Path != "" && !p.gitPending[agent.Path] {
-				p.gitPending[agent.Path] = true
+			if agent.Path != "" {
+				if _, cached := p.git[agent.Path]; cached {
+					continue
+				}
+				p.git[agent.Path] = "" // reserve the path while git runs
 				cmds = append(cmds, gitCmd(agent.Path))
 			}
 		}
@@ -266,7 +270,7 @@ func (p picker) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	case "ctrl+x":
 		if before != "" {
-			return p, killPane(before);
+			return p, killPane(before)
 		}
 	case "G":
 		if n := len(p.agents); n > 0 {
